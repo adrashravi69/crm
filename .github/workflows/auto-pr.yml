@@ -22,6 +22,7 @@ jobs:
     name: Open a pull request into main
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+
     steps:
       - uses: actions/checkout@v5
         with:
@@ -35,28 +36,49 @@ jobs:
         run: |
           set -euo pipefail
 
-          existing=$(gh pr list --head "$BRANCH" --state all --limit 1 --json number,state --jq '.[0] | select(.) | "#\(.number) (\(.state))"')
-          if [ -n "$existing" ]; then
-            echo "\`$BRANCH\` already has pull request $existing — leaving it alone." >> "$GITHUB_STEP_SUMMARY"
+          # Only create PRs targeting main
+          BASE="main"
+
+          # Skip if an open PR already exists for this branch
+          existing_pr=$(
+            gh pr list \
+              --head "$BRANCH" \
+              --base "$BASE" \
+              --state open \
+              --limit 1 \
+              --json number \
+              --jq '.[0].number // empty'
+          )
+
+          if [ -n "$existing_pr" ]; then
+            echo "PR #$existing_pr already exists for \`$BRANCH\` — skipping." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
-          if [ "$(git rev-list --count "origin/main..origin/$BRANCH")" = "0" ]; then
-            echo "\`$BRANCH\` has nothing \`main\` does not already have." >> "$GITHUB_STEP_SUMMARY"
+          # Skip if branch has no new commits compared with base
+          if [ "$(git rev-list --count "origin/$BASE..origin/$BRANCH")" -eq 0 ]; then
+            echo "\`$BRANCH\` has no commits ahead of \`$BASE\` — skipping." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
-          title=$(.github/scripts/pr-title.sh generate "origin/main" "origin/$BRANCH" "$BRANCH")
+          title=$(.github/scripts/pr-title.sh generate "origin/$BASE" "origin/$BRANCH" "$BRANCH")
 
           body=$(cat <<EOF
           Opened automatically when \`$BRANCH\` was pushed.
 
-          The title is written from the diff and rewritten as you push, because this is squashed onto \`main\` and the title becomes the commit subject and the changelog line. Retitle it yourself and it is yours — the automation stops touching it.
+          The title is generated from the diff and may be updated on later pushes.
+          It is squashed into \`$BASE\`, so the PR title becomes the commit subject
+          and changelog line. If you manually rename the PR, automation will stop
+          updating it.
 
           <!-- pr-title: $title -->
           EOF
           )
 
-          gh pr create --base main --head "$BRANCH" --title "$title" --body "$body"
+          gh pr create \
+            --base "$BASE" \
+            --head "$BRANCH" \
+            --title "$title" \
+            --body "$body"
 
-          echo "Opened a pull request for \`$BRANCH\` titled \`$title\`." >> "$GITHUB_STEP_SUMMARY"
+          echo "Opened PR for \`$BRANCH\` with title \`$title\`." >> "$GITHUB_STEP_SUMMARY"
